@@ -31,6 +31,25 @@ def get_driver():
     service = Service(executable_path=os.getenv('CHROMEDRIVER_PATH', '/usr/bin/chromedriver'))
     return webdriver.Chrome(service=service, options=chrome_options)
 
+def fetch_with_browser(url):
+    """Fetch a page using Selenium (for JS-rendered content)"""
+    print(f"[BROWSER] Fetching: {url}", flush=True)
+    driver = get_driver()
+    try:
+        driver.get(url)
+        time.sleep(3)
+        content = driver.find_element(By.TAG_NAME, 'body').text
+        driver.quit()
+        print(f"[BROWSER] Got: {content[:200]}", flush=True)
+        return content
+    except Exception as e:
+        print(f"[BROWSER] Error: {e}", flush=True)
+        try:
+            driver.quit()
+        except:
+            pass
+        return ""
+
 def fetch_linked_resources(base_url, html, content):
     """Fetch any linked resources mentioned in the page"""
     resources = {}
@@ -73,8 +92,15 @@ def fetch_linked_resources(base_url, html, content):
         try:
             print(f"[FETCH] Fetching resource: {full_url}", flush=True)
             resp = requests.get(full_url, timeout=15)
-            resources[full_url] = resp.text[:10000]
-            print(f"[FETCH] Got {len(resp.text)} chars: {resp.text[:200]}", flush=True)
+            fetched_content = resp.text
+            
+            # If response has <script> tags, it needs JS rendering
+            if '<script' in fetched_content and len(fetched_content.strip()) < 500:
+                print(f"[FETCH] Page needs JS, using browser...", flush=True)
+                fetched_content = fetch_with_browser(full_url)
+            
+            resources[full_url] = fetched_content[:10000]
+            print(f"[FETCH] Final content: {fetched_content[:300]}", flush=True)
         except Exception as e:
             print(f"[FETCH] Error fetching {full_url}: {e}", flush=True)
     
@@ -172,6 +198,11 @@ Return ONLY this JSON (no other text):
             raise ValueError("No JSON found")
         
         result = json.loads(json_match.group(0))
+        
+        # Don't submit empty answers
+        if result.get('answer') == "" or result.get('answer') is None:
+            raise ValueError("LLM returned empty answer")
+        
         return result
         
     except Exception as e:

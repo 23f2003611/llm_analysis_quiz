@@ -73,12 +73,33 @@ def fetch_linked_resources(base_url, html, content):
         try:
             print(f"[FETCH] Fetching resource: {full_url}", flush=True)
             resp = requests.get(full_url, timeout=15)
-            resources[full_url] = resp.text[:5000]
-            print(f"[FETCH] Got {len(resp.text)} chars", flush=True)
+            resources[full_url] = resp.text[:10000]
+            print(f"[FETCH] Got {len(resp.text)} chars: {resp.text[:200]}", flush=True)
         except Exception as e:
             print(f"[FETCH] Error fetching {full_url}: {e}", flush=True)
     
     return resources
+
+def calculate_from_csv(csv_text, cutoff=None):
+    """Parse CSV and calculate sum of numbers above cutoff"""
+    try:
+        lines = csv_text.strip().split('\n')
+        numbers = []
+        for line in lines:
+            for val in line.split(','):
+                val = val.strip()
+                try:
+                    numbers.append(float(val))
+                except:
+                    pass
+        
+        if cutoff is not None:
+            numbers = [n for n in numbers if n > cutoff]
+        
+        return sum(numbers)
+    except Exception as e:
+        print(f"[CALC] Error: {e}", flush=True)
+        return None
 
 def solve_quiz(quiz_url):
     print(f"[SOLVE] Fetching URL: {quiz_url}", flush=True)
@@ -97,32 +118,43 @@ def solve_quiz(quiz_url):
         # Fetch any linked resources
         resources = fetch_linked_resources(quiz_url, html, content)
         
+        # Try to auto-calculate if it's a CSV/numbers task
+        calculated_answer = None
+        cutoff_match = re.search(r'[Cc]utoff[:\s]+(\d+)', content)
+        cutoff = int(cutoff_match.group(1)) if cutoff_match else None
+        
+        for url, data in resources.items():
+            if '.csv' in url or any(c.isdigit() for c in data[:100]):
+                if cutoff:
+                    calculated_answer = calculate_from_csv(data, cutoff)
+                    print(f"[CALC] Sum above cutoff {cutoff}: {calculated_answer}", flush=True)
+        
         resources_text = ""
         if resources:
             resources_text = "\n\nFETCHED RESOURCES:\n"
             for url, data in resources.items():
                 resources_text += f"\n--- {url} ---\n{data}\n"
         
+        if calculated_answer is not None:
+            resources_text += f"\n\nPRE-CALCULATED: Sum of numbers above cutoff {cutoff} = {calculated_answer}"
+        
         prompt = f"""You are solving a data analysis quiz. You MUST provide a concrete answer.
 
 PAGE CONTENT:
 {content}
 
-HTML:
-{html[:8000]}
+HTML (partial):
+{html[:5000]}
 {resources_text}
 
-INSTRUCTIONS:
-1. Read the question carefully
-2. If there's scraped data above, USE IT to find the answer
-3. If asked for a secret code - look in the FETCHED RESOURCES
-4. If asked to sum numbers - actually calculate the sum from the data
-5. If there's a CSV - parse it and do the calculation
+RULES:
+1. If FETCHED RESOURCES contains a short text/code - THAT IS THE ANSWER (the secret code)
+2. If PRE-CALCULATED sum is provided - USE THAT NUMBER as the answer
+3. For secret codes - return the exact string from FETCHED RESOURCES
+4. Always return a specific value, never a description
 
-Return ONLY this JSON format:
-{{"submit_url": "/submit", "answer": YOUR_CALCULATED_ANSWER}}
-
-YOUR ANSWER MUST BE THE ACTUAL VALUE (string, number, etc), NOT a description!"""
+Return ONLY this JSON (no other text):
+{{"submit_url": "/submit", "answer": THE_VALUE}}"""
 
         print("[SOLVE] Calling Groq API...", flush=True)
         response = client.chat.completions.create(
